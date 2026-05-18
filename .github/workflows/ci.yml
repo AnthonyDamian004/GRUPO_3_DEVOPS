@@ -85,16 +85,29 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script: |
+            # Instalar Java 21 si no está presente (Amazon Linux 2023)
+            if ! command -v java &> /dev/null; then
+              sudo dnf install -y java-21-amazon-corretto-headless
+            fi
+
+            # Detener instancia anterior
             pkill -f 'app.jar' || true
             sleep 2
 
+            # Preparar directorio y copiar JAR
             mkdir -p /opt/user-service
             cp ~/app/artifact/*.jar /opt/user-service/app.jar
 
+            # Arrancar la app — application.yml lee estas vars automáticamente
+            export DB_HOST="${{ secrets.DB_HOST }}"
+            export DB_PORT="${{ secrets.DB_PORT }}"
+            export DB_NAME="${{ secrets.DB_NAME }}"
+            export DB_USERNAME="${{ secrets.DB_USERNAME }}"
+            export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+
             nohup java -jar /opt/user-service/app.jar \
-              --spring.datasource.url=jdbc:postgresql://${{ secrets.DB_HOST }}:${{ secrets.DB_PORT }}/${{ secrets.DB_NAME }} \
-              --spring.datasource.username=${{ secrets.DB_USERNAME }} \
-              --spring.datasource.password=${{ secrets.DB_PASSWORD }} \
               > /opt/user-service/app.log 2>&1 &
 
-            echo "Aplicacion desplegada. PID: $!"
+            echo "Desplegado con PID: $!"
+            sleep 5
+            tail -20 /opt/user-service/app.log
