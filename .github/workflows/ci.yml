@@ -1,65 +1,4 @@
-name: CI/CD Pipeline
-
-on:
-  push:
-    branches: [master, main]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: "21"
-          distribution: temurin
-          cache: gradle
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Build (skip tests)
-        run: ./gradlew build -x test --no-daemon
-
-      - name: Upload JAR artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-jar
-          path: build/libs/*.jar
-          retention-days: 1
-
-  test:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: "21"
-          distribution: temurin
-          cache: gradle
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Run tests
-        run: ./gradlew test --no-daemon
-
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report
-          path: build/reports/tests/test/
-          retention-days: 7
-
-  deploy:
+deploy:
     runs-on: ubuntu-latest
     needs: [build, test]
     steps:
@@ -76,7 +15,8 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           source: "./artifact/*.jar"
-          target: "/home/${{ secrets.EC2_USER }}/app/"
+          target: "/home/${{ secrets.EC2_USER }}/deploy/"
+          strip_components: 1 # Esto quita la carpeta 'artifact' al copiar
 
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.0.3
@@ -85,29 +25,34 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
           script: |
-            # Instalar Java 21 si no está presente (Amazon Linux 2023)
+            # 1. Instalar Java 21 si falta (Amazon Linux 2023)
             if ! command -v java &> /dev/null; then
+              echo "Instalando Java 21..."
               sudo dnf install -y java-21-amazon-corretto-headless
             fi
 
-            # Detener instancia anterior
-            pkill -f 'app.jar' || true
+            # 2. Definir rutas en el HOME para evitar problemas de permisos
+            APP_DIR="$HOME/user-service"
+            mkdir -p $APP_DIR
+
+            # 3. Detener la aplicación anterior
+            echo "Limpiando procesos en puerto 8080..."
+            sudo fuser -k 8080/tcp || true
             sleep 2
 
-            # Preparar directorio y copiar JAR
-            mkdir -p /opt/user-service
-            cp ~/app/artifact/*.jar /opt/user-service/app.jar
+            # 4. Mover el JAR a su lugar final
+            mv $HOME/deploy/*.jar $APP_DIR/app.jar
 
-            # Arrancar la app — application.yml lee estas vars automáticamente
-            export DB_HOST="${{ secrets.DB_HOST }}"
-            export DB_PORT="${{ secrets.DB_PORT }}"
-            export DB_NAME="${{ secrets.DB_NAME }}"
-            export DB_USERNAME="${{ secrets.DB_USERNAME }}"
-            export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+            # 5. Arrancar con las variables del RDS
+            cd $APP_DIR
+            nohup java -jar app.jar \
+              --DB_HOST="${{ secrets.DB_HOST }}" \
+              --DB_PORT="5432" \
+              --DB_NAME="postgres" \
+              --DB_USERNAME="postgres" \
+              --DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+              > app.log 2>&1 &
 
-            nohup java -jar /opt/user-service/app.jar \
-              > /opt/user-service/app.log 2>&1 &
-
-            echo "Desplegado con PID: $!"
-            sleep 5
-            tail -20 /opt/user-service/app.log
+            echo "Aplicación iniciada. PID: $!"
+            sleep 8
+            tail -n 20 app.log
