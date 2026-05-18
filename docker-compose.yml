@@ -1,0 +1,44 @@
+name: user-service-compose
+
+networks:
+  user-service-net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16
+    networks:
+      - user-service-net
+    environment:
+      POSTGRES_DB: userservice
+      POSTGRES_USER: userservice
+      POSTGRES_PASSWORD: userservice
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U userservice -d userservice"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  user-service:
+    build: . # <-- Le dice que use el Dockerfile de tu proyecto
+    image: user-service:latest
+    networks:
+      - user-service-net
+    ports:
+      - "8080:8080"
+    environment: # <-- Variables para que Java se conecte a este Postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=userservice
+      - DB_USERNAME=userservice
+      - DB_PASSWORD=userservice
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
